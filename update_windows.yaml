@@ -1,0 +1,90 @@
+---
+- name: Mettre à jour Windows avec proxy temporaire
+  hosts: all
+  gather_facts: no
+  tasks:
+    # 1️⃣ Activer le proxy avant la mise à jour
+    - name: Définir les variables de configuration proxy
+      set_fact:
+        proxy_server: "http://proxy.exemple.com:8080"
+        proxy_enabled: 1
+        proxy_override: "<local>"
+
+    - name: Activer le proxy dans le registre
+      win_regedit:
+        path: HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings
+        name: ProxyEnable
+        data: "{{ proxy_enabled }}"
+        type: dword
+
+    - name: Définir l'adresse du proxy
+      win_regedit:
+        path: HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings
+        name: ProxyServer
+        data: "{{ proxy_server }}"
+        type: string
+
+    - name: Exclure les adresses locales du proxy
+      win_regedit:
+        path: HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings
+        name: ProxyOverride
+        data: "{{ proxy_override }}"
+        type: string
+
+    - name: Configurer le proxy pour WinHTTP (Windows Update)
+      win_shell: netsh winhttp set proxy proxy-server="{{ proxy_server }}"
+
+    - name: Configurer le proxy pour PowerShell
+      win_shell: |
+        [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy("{{ proxy_server }}")
+        [System.Net.WebRequest]::DefaultWebProxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials
+        [System.Net.WebRequest]::DefaultWebProxy.UseDefaultCredentials = $true
+
+    # 2️⃣ Effectuer la mise à jour de Windows
+    - name: Vérifier les mises à jour disponibles
+      win_updates:
+        category_names:
+          - "CriticalUpdates"
+          - "SecurityUpdates"
+        state: searched
+
+    - name: Mettre à jour Windows
+      win_updates:
+        category_names:
+          - "CriticalUpdates"
+          - "SecurityUpdates"
+        reboot: no
+      register: windows_update_result
+      failed_when: windows_update_result.failed
+
+    - name: Vérifier si un redémarrage est nécessaire
+      debug:
+        msg: "Un redémarrage est nécessaire"
+      when: windows_update_result.reboot_required
+
+    # 3️⃣ Désactiver et supprimer le proxy après la mise à jour
+    - name: Désactiver le proxy dans le registre
+      win_regedit:
+        path: HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings
+        name: ProxyEnable
+        data: 0
+        type: dword
+
+    - name: Supprimer l'adresse du proxy
+      win_regedit:
+        path: HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings
+        name: ProxyServer
+        state: absent
+
+    - name: Supprimer les exceptions du proxy
+      win_regedit:
+        path: HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings
+        name: ProxyOverride
+        state: absent
+
+    - name: Supprimer le proxy WinHTTP
+      win_shell: netsh winhttp reset proxy
+
+    - name: Redémarrer si nécessaire
+      win_reboot:
+      when: windows_update_result.reboot_required
